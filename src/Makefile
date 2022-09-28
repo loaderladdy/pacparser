@@ -24,7 +24,6 @@
 
 VERSION ?= $(shell git describe --always --tags --candidate=100)
 
-PREFIX ?= /usr
 OS_ARCH := $(subst /,_,$(shell uname -s | sed /\ /s//_/))
 
 LIBRARY_NAME = libpacparser
@@ -43,7 +42,7 @@ SHFLAGS = -fPIC
 SMCFLAGS = -DHAVE_VA_COPY -DVA_COPY=__va_copy
 
 ifeq ($(OS_ARCH),Darwin)
-  PREFIX = /usr/local
+  PREFIX ?= /usr/local
   MAC_MAJOR_VERSION := $(shell sw_vers -productVersion | cut -d. -f1)
   MAC_GT_OS11 := $(shell [ $(MAC_MAJOR_VERSION) -le 10 ] && echo false)
   SO_SUFFIX = dylib
@@ -60,6 +59,7 @@ ifeq ($(OS_ARCH),Darwin)
   endif
 endif
 
+PREFIX ?= /usr
 CFLAGS = -g -DXP_UNIX -Wall -DVERSION=$(VERSION)
 
 ifndef PYTHON
@@ -80,26 +80,26 @@ MAN_PREFIX = $(PREFIX)/share/man
 all: testpactester
 
 jsapi_buildstamp: spidermonkey/js/src
-	cd spidermonkey && SMCFLAGS="$(SHFLAGS) $(SMCFLAGS)" "$(MAKE)" jsapi
+	cd spidermonkey && SMCFLAGS="$(SHFLAGS) $(SMCFLAGS)" $(MAKE) jsapi
 	touch jsapi_buildstamp
 
-libjs.a: spidermonkey/js/src
-	cd spidermonkey && SMCFLAGS="$(SHFLAGS) $(SMCFLAGS)" "$(MAKE)" jslib
+spidermonkey/libjs.a: spidermonkey/js/src
+	cd spidermonkey && SMCFLAGS="$(SHFLAGS) $(SMCFLAGS)" $(MAKE) jslib
 
 pacparser.o: pacparser.c pac_utils.h pacparser.h jsapi_buildstamp
 	$(CC) $(CFLAGS) $(SHFLAGS) -c pacparser.c -o pacparser.o
 	touch pymod/pacparser_o_buildstamp
 
-$(LIBRARY): pacparser.o libjs.a
-	$(MKSHLIB) $(CFLAGS) $(LDFLAGS) $(LIB_OPTS) -o $(LIBRARY) pacparser.o libjs.a -lm
+$(LIBRARY): pacparser.o spidermonkey/libjs.a
+	$(MKSHLIB) $(CFLAGS) $(LDFLAGS) $(LIB_OPTS) -o $(LIBRARY) pacparser.o spidermonkey/libjs.a -lm
 
 $(LIBRARY_LINK): $(LIBRARY)
 	ln -sf $(LIBRARY) $(LIBRARY_LINK)
 
-pactester: pactester.c pacparser.h $(LIBRARY_LINK)
-	$(CC) $(CFLAGS) $(LDFLAGS) pactester.c -o pactester -lpacparser -L. -I.
+pactester: pactester.c pacparser.h pacparser.o spidermonkey/libjs.a
+	$(CC) $(CFLAGS) $(LDFLAGS) pactester.c pacparser.o spidermonkey/libjs.a -o pactester -lm -L. -I.
 
-testpactester: pactester
+testpactester: pactester $(LIBRARY_LINK)
 	echo "Running tests for pactester."
 	NO_INTERNET=$(NO_INTERNET) ../tests/runtests.sh
 
@@ -126,15 +126,20 @@ install: all
 	(test -d ../examples && install -m 644 ../examples/* $(PREFIX)/share/doc//pacparser/examples/) || true
 
 # Targets to build python module
-pymod: pacparser.o pacparser.h libjs.a
-	cp libjs.a pacparser.o pymod/
+pymod: pacparser.o pacparser.h spidermonkey/libjs.a
 	cd pymod && ARCHFLAGS="" $(PYTHON) setup.py build
+	$(PYTHON) ../tests/runtests.py
+
+pymod-dist: pacparser.o pacparser.h spidermonkey/libjs.a
+	cd pymod && ARCHFLAGS="" $(PYTHON) setup.py build
+	cd pymod && ARCHFLAGS="" $(PYTHON) setup.py dist
 	$(PYTHON) ../tests/runtests.py
 
 install-pymod: pymod
 	cd pymod && ARCHFLAGS="" $(PYTHON) setup.py install --root="$(DESTDIR)/" $(EXTRA_ARGS)
 
 clean:
-	rm -f $(LIBRARY_LINK) $(LIBRARY) libjs.a pacparser.o pactester pymod/pacparser_o_buildstamp jsapi_buildstamp
+	rm -f $(LIBRARY_LINK) $(LIBRARY) pacparser.o pactester pymod/pacparser_o_buildstamp jsapi_buildstamp
+	rm -rf dist
 	cd pymod && $(PYTHON) setup.py clean --all
-	cd spidermonkey && "$(MAKE)" clean
+	cd spidermonkey && $(MAKE) clean
